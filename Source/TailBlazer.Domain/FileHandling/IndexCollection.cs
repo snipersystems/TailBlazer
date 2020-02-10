@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
+using Utf8Json;
 
 namespace TailBlazer.Domain.FileHandling
 {
-    public class IndexCollection: ILineProvider
+    public class IndexCollection : ILineProvider
     {
         public int Count { get; }
         public int Diff { get; }
@@ -26,7 +28,7 @@ namespace TailBlazer.Domain.FileHandling
             Count = latest.Select(idx => idx.LineCount).Sum();
             Indicies = latest.ToArray();
             Diff = Count - (previous?.Count ?? 0);
-            
+
             //need to check whether
             if (previous == null)
             {
@@ -56,6 +58,8 @@ namespace TailBlazer.Domain.FileHandling
                     yield return line;
             }
         }
+
+        private Regex SubstituteRegex = new Regex(@"{(?<exp>[^}]+)}", RegexOptions.Compiled);
 
         private IEnumerable<Line> ReadLinesByIndex(ScrollRequest scroll)
         {
@@ -95,7 +99,32 @@ namespace TailBlazer.Domain.FileHandling
                             ? DateTime.UtcNow
                             : (DateTime?)null;
 
-                        yield return new Line(info, line, ontail);
+                        if (!line.StartsWith("{"))
+                        {
+                            yield return new Line(info, line, ontail);
+                        }
+                        else
+                        {
+                            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(line);
+                            var timestamp = DateTime.Parse(data["@t"].ToString());
+                            string message = data["@mt"].ToString();
+                            var timestampPrefix = timestamp.ToString("[dd/MM/yyyy hh:mm:ss.fff tt] ");
+
+                            string formattedMessage = SubstituteRegex.Replace(message, match =>
+                            {
+                                var name = match.Groups["exp"].Value;
+                                return data[name].ToString();
+                            });
+
+                            if (data.TryGetValue("@x", out var exception) && !string.IsNullOrEmpty(exception.ToString()))
+                            {
+                                yield return new Line(info, timestampPrefix + formattedMessage + " (" + exception.ToString() + ")", ontail);
+                            }
+                            else
+                            {
+                                yield return new Line(info, timestampPrefix + formattedMessage, ontail);
+                            }
+                        }
                     }
                 }
             }
@@ -106,10 +135,10 @@ namespace TailBlazer.Domain.FileHandling
 
             //TODO: Calculate initial index of first item.
 
-   
+
             //scroll from specified position
 
-            using (var stream = File.Open(Info.FullName, FileMode.Open, FileAccess.Read,FileShare.Delete | FileShare.ReadWrite))
+            using (var stream = File.Open(Info.FullName, FileMode.Open, FileAccess.Read, FileShare.Delete | FileShare.ReadWrite))
             {
                 int taken = 0;
                 using (var reader = new StreamReaderExtended(stream, Encoding, false))
@@ -123,7 +152,7 @@ namespace TailBlazer.Domain.FileHandling
                     {
 
                         var line = reader.ReadLine();
-                        if (line==null) yield break;
+                        if (line == null) yield break;
 
                         var endPosition = reader.AbsolutePosition();
 
@@ -155,8 +184,8 @@ namespace TailBlazer.Domain.FileHandling
             else
             {
 
-                    if (scroll.FirstIndex + size >= Count)
-                        first = Count - size;
+                if (scroll.FirstIndex + size >= Count)
+                    first = Count - size;
 
             }
 
@@ -188,13 +217,13 @@ namespace TailBlazer.Domain.FileHandling
 
                     if (sparseIndex.Compression == 1)
                     {
-                       return firstLineInContainer + sparseIndex.Indicies.IndexOf(position);
+                        return firstLineInContainer + sparseIndex.Indicies.IndexOf(position);
                     }
-             
+
                     //find nearest, then work out offset
                     var nearest = sparseIndex.Indicies.Data
-                        .Select((value,index)=>new {value,index})
-                        .OrderByDescending(x=>x.value)
+                        .Select((value, index) => new { value, index })
+                        .OrderByDescending(x => x.value)
                         .FirstOrDefault(i => i.value <= position);
 
                     if (nearest != null)
@@ -204,8 +233,8 @@ namespace TailBlazer.Domain.FileHandling
 
                         //remaining size
                         var size = (sparseIndex.End - sparseIndex.Start);
-                        var offset =   (position - nearest.value);
-                        var estimateOffset = (offset/size) * sparseIndex.Compression;
+                        var offset = (position - nearest.value);
+                        var estimateOffset = (offset / size) * sparseIndex.Compression;
                         return firstLineInContainer + relativeIndex + estimateOffset;
                     }
                     else
@@ -217,7 +246,7 @@ namespace TailBlazer.Domain.FileHandling
                         var size = (sparseIndex.End - sparseIndex.Start);
                         var offset = position;
                         var estimateOffset = (offset / size) * sparseIndex.Compression;
-                        return firstLineInContainer +  relativeIndex + estimateOffset;
+                        return firstLineInContainer + relativeIndex + estimateOffset;
                     }
                 }
                 firstLineInContainer = firstLineInContainer + sparseIndex.LineCount;
@@ -242,11 +271,11 @@ namespace TailBlazer.Domain.FileHandling
                         //return estimate here!
                         var lines = sparseIndex.LineCount;
                         var bytes = sparseIndex.End - sparseIndex.Start;
-                        var bytesPerLine = bytes/lines;
-                        var estimate = index*bytesPerLine;
+                        var bytesPerLine = bytes / lines;
+                        var estimate = index * bytesPerLine;
 
 
-                        return new RelativeIndex(index, estimate, 0,true);
+                        return new RelativeIndex(index, estimate, 0, true);
                     }
 
                     var relativePosition = (index - firstLineInContainer);
@@ -256,7 +285,7 @@ namespace TailBlazer.Domain.FileHandling
                     if (relativeIndex >= sparseIndex.IndexCount)
                         relativeIndex = sparseIndex.IndexCount - 1;
                     var start = relativeIndex == 0 ? 0 : sparseIndex.Indicies[relativeIndex - 1];
-                    return new RelativeIndex(index, start, offset,false);
+                    return new RelativeIndex(index, start, offset, false);
                 }
                 firstLineInContainer = firstLineInContainer + sparseIndex.LineCount;
             }
@@ -268,7 +297,7 @@ namespace TailBlazer.Domain.FileHandling
             public long Index { get; }
             public long Start { get; }
             public int LinesOffset { get; }
-            public bool IsEstimate { get;  }
+            public bool IsEstimate { get; }
 
 
             public RelativeIndex(long index, long start, int linesOffset, bool isEstimate)
